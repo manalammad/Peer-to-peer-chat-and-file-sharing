@@ -5,7 +5,6 @@ import threading
 import os
 import subprocess
 
-
 global message_entry, listening_socket, listening_port
 listening_port = 0  # Initialize the listening port
 
