@@ -1,7 +1,10 @@
 import socket
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox,filedialog
 import threading
+import os
+import subprocess
+
 
 global message_entry, listening_socket, listening_port
 listening_port = 0  # Initialize the listening port
@@ -40,7 +43,7 @@ def start_client():
     def open_chat_window(success_message, username):
         global chat_window
         global message_entry
-        global chat_log
+        global chat_log,download_button
         chat_window = tk.Toplevel(root)
         chat_window.title("Chat Client")
         
@@ -64,6 +67,11 @@ def start_client():
 
         show_users_button = tk.Button(chat_window, text="Show Users", command=request_user_list)
         show_users_button.pack()
+
+        send_file_button = tk.Button(chat_window, text="Send File", command=send_file)
+        send_file_button.pack()
+        
+       
 
         logout_button = tk.Button(chat_window, text="Logout", command=logout)
         logout_button.pack()
@@ -91,7 +99,9 @@ def start_client():
         
         def start_chat():
             selected_users = [user_var.get() for user_var in user_vars if user_var.get()]
+            print(selected_users)
             selected_usernames = [user_list[i] for i, value in enumerate(selected_users) if value]
+            print(selected_usernames)
 
             if not selected_usernames:
                 messagebox.showerror("Error", "Please select at least one user.")
@@ -115,6 +125,7 @@ def start_client():
         start_button.pack()
 
     def connect_to_user(username, user_ip, user_port):
+        global user_socket
         print("User name for connect to user  to which needs to connect ", username) 
         client_socket.send(f"{username},{user_ip},get_listening_port".encode())
         server__socket = client_socket.recv(1024).decode()
@@ -124,20 +135,31 @@ def start_client():
         print(f"The listening port received from the server for {username} is {server_m_socket}")
         user_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         print (f"Connecting to socket {user_ip}, {server_m_socket}")
-        user_socket.connect((user_ip, listening_port))
+        user_socket.connect((user_ip, int(server_m_socket)))
+        print("User socket connected to ", server_m_socket)
         chat_log.insert(tk.END, f"Connected to {username}\n")
+        threading.Thread(target=receive_messages_from_user, args=(user_socket,)).start()
 
     def send_message():
+
         message = message_entry.get()
-        client_socket.send(message.encode())
-        if message.lower() == 'exit':
-            logout()
-        else:
-            chat_log.insert(tk.END, f"You: {message}\n")
-            message_entry.delete(0, tk.END)
-            received_message = client_socket.recv(1024).decode()
-            chat_log.insert(tk.END, received_message + "\n")
-            message_entry.delete(0, tk.END)
+        print("User socket ", user_socket.getsockname())
+        user_socket.send(f"text,{message}".encode())
+        chat_log.insert(tk.END, f"You: {message}\n")
+        message_entry.delete(0, tk.END)
+
+    def receive_messages_from_user(sock):
+        while True:
+            try:
+                data = sock.recv(1024).decode()
+                if data:
+                    if data.startswith("text,"):
+                        chat_log.insert(tk.END, f"Other user: {data[5:]}\n")
+                    elif data.startswith("file,"):
+                        _, filename, filesize = data.split(",")
+                        receive_file(sock, filename, int(filesize))
+            except ConnectionResetError:
+                break
 
     def start_listening():
         global listening_socket, listening_port
@@ -152,16 +174,73 @@ def start_client():
 
         while True:
             conn, addr = listening_socket.accept()
-            threading.Thread(target=handle_incoming_connection, args=(conn, addr)).start()
+            threading.Thread(target=handle_incoming_connection, args=(conn,addr)).start()
 
+    
     def handle_incoming_connection(conn, addr):
+        global receiving_socket
+        receiving_socket = conn
         while True:
-            data = conn.recv(1024).decode()
-            if not data:
+            try:
+                data = conn.recv(1024).decode()
+                if data:
+                    if data.startswith("text,"):
+                        chat_log.insert(tk.END, f"Other user: {data[5:]}\n")
+                    elif data.startswith("file,"):
+                        _, filename, filesize = data.split(",")
+                        rec_fileadd = receive_file(conn, filename, int(filesize))
+                        
+            except ConnectionResetError:
                 break
-            chat_log.insert(tk.END, f"Other user: {data}\n")
-        conn.close()
+                    
+    def send_file():
+        file_path = filedialog.askopenfilename()
+        if file_path:
+            file_size = os.path.getsize(file_path)
+            file_name = os.path.basename(file_path)
+            user_socket.send(f"file,{file_name},{file_size}".encode())
+            with open(file_path, "rb") as f:
+                while chunk := f.read(1024):
+                    user_socket.send(chunk)
+            chat_log.insert(tk.END, f"You sent a file: {file_name}\n")
 
+    def receive_file(sock, filename, filesize):
+        received_file_path = f"received_{filename}"
+        with open(received_file_path, "wb") as f:
+            bytes_received = 0
+            while bytes_received < filesize:
+                chunk = sock.recv(min(1024, filesize - bytes_received))
+                if not chunk:
+                    break
+                f.write(chunk)
+                bytes_received += len(chunk)
+        chat_log.insert(tk.END, f"Received a file: {filename}\n")
+        print("In receive",received_file_path)
+        download_and_view_file(received_file_path)
+        return received_file_path
+    
+    def download_and_view_file(received_file_path):
+        print("In download and receive",received_file_path)
+        file_path = filedialog.asksaveasfilename(defaultextension="", filetypes=[("All Files", "*.*")])
+        if file_path and received_file_path:
+            _, file_extension = os.path.splitext(received_file_path)
+            if not file_extension:
+                messagebox.showerror("Error", "File extension not found.")
+                return
+            with open(received_file_path, "rb") as f:
+                with open(file_path + file_extension, "wb") as downloaded_file:
+                    for chunk in iter(lambda: f.read(1024), b""):
+                        downloaded_file.write(chunk)
+            if os.name == "nt":  # Check if the operating system is Windows
+                subprocess.Popen(["start", file_path + file_extension], shell=True)
+            elif os.name == "posix":  # Check if the operating system is POSIX (e.g., Linux, macOS)
+                subprocess.Popen(["xdg-open", file_path + file_extension])
+            else:
+                messagebox.showerror("Error", "Unsupported operating system.")
+
+
+
+    
     client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     client_socket.connect(('localhost', 9999))
 
